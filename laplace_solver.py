@@ -3,9 +3,10 @@ Resolución de Ecuaciones Diferenciales Ordinarias
 mediante la Transformada de Laplace.
 
 Autor: Estudiante UTEZ - Academia de Ciencias
-Librerías: sympy, numpy, matplotlib, tkinter
+Librerías: sympy, numpy, matplotlib, tkinter, Pillow
 """
 
+import io
 import sympy as sp
 import numpy as np
 import matplotlib
@@ -14,11 +15,12 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog
 from sympy import (
     symbols, Function, laplace_transform, inverse_laplace_transform,
     solve, Eq, exp, sin, cos, simplify, apart, Symbol, latex, pretty
 )
+from PIL import Image, ImageTk
 import threading
 
 
@@ -132,6 +134,55 @@ def generar_figura(y_t, titulo="y(t)", t_max=10):
 
 
 # ============================================================
+# Renderizado de LaTeX como imagen Tkinter
+# ============================================================
+
+def renderizar_latex(expresion_latex, fontsize=16, bg_color='#2a2a3d', text_color='white'):
+    """
+    Recibe un string LaTeX y devuelve un objeto ImageTk.PhotoImage
+    que se puede mostrar en un Label de Tkinter.
+    Usa el motor mathtext de matplotlib (no requiere LaTeX instalado).
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    fig = Figure(dpi=120)
+    # Asignar un canvas Agg para poder renderizar off-screen
+    FigureCanvasAgg(fig)
+
+    fig.patch.set_facecolor(bg_color)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.axis('off')
+    ax.set_facecolor(bg_color)
+
+    # Renderizar el texto LaTeX con mathtext de matplotlib
+    text = ax.text(0.5, 0.5, f"${expresion_latex}$",
+                   fontsize=fontsize,
+                   color=text_color,
+                   ha='center', va='center',
+                   transform=ax.transAxes)
+
+    # Dibujar para calcular el tamaño real del texto
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    bbox = text.get_window_extent(renderer=renderer)
+
+    # Ajustar el tamaño de la figura al contenido renderizado
+    width = bbox.width / fig.dpi + 0.3
+    height = bbox.height / fig.dpi + 0.2
+    fig.set_size_inches(max(width, 0.5), max(height, 0.3))
+
+    # Exportar a buffer PNG y convertir a PhotoImage via PIL
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', facecolor=bg_color,
+                bbox_inches='tight', pad_inches=0.08, dpi=120)
+    plt.close(fig)
+    buf.seek(0)
+
+    img = Image.open(buf)
+    return ImageTk.PhotoImage(img)
+
+
+# ============================================================
 # Casos de prueba requeridos
 # Los coeficientes (a, b, c, f_str) se definen directamente
 # para que _cargar_caso() no dependa de comparar strings.
@@ -197,6 +248,9 @@ class AplicacionLaplace(tk.Tk):
 
         # Referencia a la figura actual (para el botón de guardar)
         self._figura_actual = None
+
+        # Lista para mantener referencias a imágenes LaTeX (evita garbage collection)
+        self._imagenes_latex = []
 
         # Estilos ttk personalizados
         self._configurar_estilos()
@@ -434,8 +488,7 @@ class AplicacionLaplace(tk.Tk):
     def _cargar_caso(self, caso):
         """
         Carga un caso de prueba en los campos de entrada.
-        Lee los valores directamente del diccionario del caso
-        (keys: a, b, c, f_str, y0_str, dy0_str) sin comparar strings.
+        Lee los valores directamente del diccionario del caso.
         """
         # Ajustar selector de orden y visibilidad de campos
         self.var_orden.set(caso['orden'])
@@ -456,46 +509,63 @@ class AplicacionLaplace(tk.Tk):
         self.entry_dy0.insert(0, caso['dy0_str'])
 
     # ----------------------------------------------------------
-    # Panel derecho: resultados y gráfica
+    # Panel derecho: resultados con LaTeX y gráfica
     # ----------------------------------------------------------
     def _crear_panel_resultados(self, padre):
-        """Panel donde se muestran los resultados paso a paso y la gráfica."""
+        """
+        Panel donde se muestran los resultados paso a paso con fórmulas
+        renderizadas en LaTeX y la gráfica de la solución.
+        """
         panel = ttk.Frame(padre, style='Panel.TFrame')
         panel.grid(row=0, column=1, sticky='nsew')
         panel.rowconfigure(0, weight=1)
         panel.rowconfigure(1, weight=1)
         panel.columnconfigure(0, weight=1)
 
-        # --- Área de texto con scroll para los pasos del procedimiento ---
-        frame_texto = ttk.Frame(panel, style='Panel.TFrame')
-        frame_texto.grid(row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
-        frame_texto.rowconfigure(0, weight=0)
-        frame_texto.rowconfigure(1, weight=1)
-        frame_texto.columnconfigure(0, weight=1)
+        # --- Área scrollable para los pasos con fórmulas LaTeX ---
+        frame_pasos = ttk.Frame(panel, style='Panel.TFrame')
+        frame_pasos.grid(row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
+        frame_pasos.rowconfigure(1, weight=1)
+        frame_pasos.columnconfigure(0, weight=1)
 
-        ttk.Label(frame_texto, text="Procedimiento paso a paso",
+        ttk.Label(frame_pasos, text="Procedimiento paso a paso",
                   style='Subtitulo.TLabel').grid(row=0, column=0, sticky='w', pady=(0, 5))
 
-        self.texto_resultado = scrolledtext.ScrolledText(
-            frame_texto, bg='#1a1a2e', fg=COLOR_TEXT,
-            font=('Consolas', 10), relief='flat', wrap='word',
-            insertbackground=COLOR_TEXT, highlightthickness=1,
-            highlightcolor=COLOR_BORDER, highlightbackground=COLOR_BORDER,
-            state='disabled')
-        self.texto_resultado.grid(row=1, column=0, sticky='nsew')
+        # Canvas con scrollbar para mezclar texto y fórmulas LaTeX
+        self.canvas_pasos = tk.Canvas(frame_pasos, bg=COLOR_PANEL,
+                                      highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(frame_pasos, orient='vertical',
+                                  command=self.canvas_pasos.yview)
 
-        # Tags de colores para diferenciar secciones en el texto
-        self.texto_resultado.tag_configure('titulo',
-                                           foreground=COLOR_ACCENT2,
-                                           font=('Consolas', 11, 'bold'))
-        self.texto_resultado.tag_configure('paso',
-                                           foreground=COLOR_SUCCESS,
-                                           font=('Consolas', 10, 'bold'))
-        self.texto_resultado.tag_configure('ecuacion',
-                                           foreground='#f8fafc',
-                                           font=('Consolas', 11))
-        self.texto_resultado.tag_configure('separador',
-                                           foreground=COLOR_TEXT_DIM)
+        # Frame interior donde se colocan los labels de texto y LaTeX
+        self.frame_interior = ttk.Frame(self.canvas_pasos, style='Panel.TFrame')
+        self.frame_interior.bind('<Configure>',
+            lambda e: self.canvas_pasos.configure(
+                scrollregion=self.canvas_pasos.bbox('all')))
+
+        self.canvas_window = self.canvas_pasos.create_window(
+            (0, 0), window=self.frame_interior, anchor='nw')
+
+        self.canvas_pasos.configure(yscrollcommand=scrollbar.set)
+
+        # Ajustar ancho del frame interior al ancho del canvas
+        self.canvas_pasos.bind('<Configure>', self._ajustar_ancho_interior)
+
+        # Soporte para scroll con rueda del ratón
+        self.canvas_pasos.bind('<Enter>',
+            lambda e: self.canvas_pasos.bind_all('<MouseWheel>',
+                lambda ev: self.canvas_pasos.yview_scroll(-1 * (ev.delta // 120), 'units')))
+        self.canvas_pasos.bind('<Enter>',
+            lambda e: self.canvas_pasos.bind_all('<Button-4>',
+                lambda ev: self.canvas_pasos.yview_scroll(-1, 'units')) or
+                       self.canvas_pasos.bind_all('<Button-5>',
+                lambda ev: self.canvas_pasos.yview_scroll(1, 'units')))
+        self.canvas_pasos.bind('<Leave>',
+            lambda e: (self.canvas_pasos.unbind_all('<Button-4>'),
+                       self.canvas_pasos.unbind_all('<Button-5>')))
+
+        self.canvas_pasos.grid(row=1, column=0, sticky='nsew')
+        scrollbar.grid(row=1, column=1, sticky='ns')
 
         # --- Área de la gráfica con botón para exportar ---
         frame_grafica = ttk.Frame(panel, style='Panel.TFrame')
@@ -525,28 +595,66 @@ class AplicacionLaplace(tk.Tk):
         # Mostrar mensaje de bienvenida al iniciar
         self._mostrar_mensaje_bienvenida()
 
+    def _ajustar_ancho_interior(self, event):
+        """Ajusta el ancho del frame interior al ancho del canvas."""
+        self.canvas_pasos.itemconfig(self.canvas_window, width=event.width)
+
+    def _agregar_texto(self, texto, color=COLOR_TEXT, fuente=('Segoe UI', 11, 'bold')):
+        """Agrega un label de texto al panel de pasos."""
+        lbl = tk.Label(self.frame_interior, text=texto, bg=COLOR_PANEL,
+                       fg=color, font=fuente, anchor='w', justify='left')
+        lbl.pack(anchor='w', fill='x', padx=15, pady=(10, 2))
+        return lbl
+
+    def _agregar_latex(self, latex_str, fontsize=16):
+        """
+        Renderiza una expresión LaTeX como imagen y la agrega al panel de pasos.
+        Guarda la referencia a la imagen para evitar que el garbage collector la elimine.
+        """
+        img = renderizar_latex(latex_str, fontsize=fontsize)
+        self._imagenes_latex.append(img)
+        lbl = tk.Label(self.frame_interior, image=img, bg=COLOR_PANEL, bd=0)
+        lbl.pack(anchor='w', padx=25, pady=3)
+        return lbl
+
+    def _agregar_separador(self):
+        """Agrega una línea separadora visual al panel de pasos."""
+        sep = tk.Frame(self.frame_interior, bg=COLOR_BORDER, height=1)
+        sep.pack(fill='x', padx=15, pady=8)
+
+    def _limpiar_panel_pasos(self):
+        """Elimina todos los widgets del panel de pasos y limpia referencias de imágenes."""
+        for widget in self.frame_interior.winfo_children():
+            widget.destroy()
+        self._imagenes_latex.clear()
+
     def _mostrar_mensaje_bienvenida(self):
-        """Muestra instrucciones de uso en el panel de resultados."""
-        self.texto_resultado.config(state='normal')
-        self.texto_resultado.delete('1.0', tk.END)
-        self.texto_resultado.insert(tk.END,
-            "  SOLUCIONADOR DE EDOs POR TRANSFORMADA DE LAPLACE\n",
-            'titulo')
-        self.texto_resultado.insert(tk.END, "=" * 55 + "\n\n", 'separador')
-        self.texto_resultado.insert(tk.END,
-            "  Ingrese los coeficientes de su ecuación diferencial\n"
-            "  en el panel izquierdo y presione RESOLVER.\n\n"
-            "  También puede seleccionar uno de los 4 casos de\n"
-            "  prueba predefinidos.\n\n", 'ecuacion')
-        self.texto_resultado.insert(tk.END,
-            "  Ecuaciones soportadas:\n", 'paso')
-        self.texto_resultado.insert(tk.END,
-            "    - Primer orden:  b*y' + c*y = f(t)\n"
-            "    - Segundo orden: a*y'' + b*y' + c*y = f(t)\n\n", 'ecuacion')
-        self.texto_resultado.insert(tk.END,
-            "  Para f(t) puede usar:\n"
-            "    0, 5, exp(t), sin(t), cos(t), t, t**2, etc.\n", 'ecuacion')
-        self.texto_resultado.config(state='disabled')
+        """Muestra instrucciones de uso con fórmulas LaTeX de ejemplo."""
+        self._limpiar_panel_pasos()
+
+        self._agregar_texto("SOLUCIONADOR DE EDOs POR TRANSFORMADA DE LAPLACE",
+                           color=COLOR_ACCENT2, fuente=('Segoe UI', 13, 'bold'))
+
+        self._agregar_texto("Ingrese los coeficientes de su ecuación diferencial\n"
+                           "en el panel izquierdo y presione RESOLVER.\n\n"
+                           "También puede seleccionar uno de los 4 casos\n"
+                           "de prueba predefinidos.",
+                           color=COLOR_TEXT, fuente=('Segoe UI', 10))
+
+        self._agregar_texto("Ecuaciones soportadas:", color=COLOR_SUCCESS)
+
+        # Mostrar ejemplos como fórmulas LaTeX renderizadas
+        self._agregar_texto("Primer orden:", color=COLOR_TEXT_DIM,
+                           fuente=('Segoe UI', 9))
+        self._agregar_latex(r"b\,y'(t) + c\,y(t) = f(t)", fontsize=14)
+
+        self._agregar_texto("Segundo orden:", color=COLOR_TEXT_DIM,
+                           fuente=('Segoe UI', 9))
+        self._agregar_latex(r"a\,y''(t) + b\,y'(t) + c\,y(t) = f(t)", fontsize=14)
+
+        self._agregar_texto("Para f(t) puede usar:\n"
+                           "  0, 5, exp(t), sin(t), cos(t), t**2, etc.",
+                           color=COLOR_TEXT_DIM, fuente=('Segoe UI', 9))
 
     # ----------------------------------------------------------
     # Lógica de resolución
@@ -576,8 +684,8 @@ class AplicacionLaplace(tk.Tk):
 
     def _resolver_hilo(self, datos):
         """
-        Hilo de cálculo: construye la EDO a partir de los datos leídos,
-        resuelve y programa la actualización de la GUI en el hilo principal.
+        Hilo de cálculo: construye la EDO, resuelve, genera las imágenes LaTeX
+        y programa la actualización de la GUI en el hilo principal.
         """
         try:
             orden = datos['orden']
@@ -603,61 +711,112 @@ class AplicacionLaplace(tk.Tk):
             # Resolver la EDO
             resultado = resolver_edo(lhs, f_t, y0_val, dy0_val)
 
-            # Generar la figura de matplotlib
+            # --- Preparar las expresiones LaTeX ---
+            # Ecuación original
+            if orden == 1:
+                eq_ltx = (f"{sp.latex(b_val)}\\,y'(t) + {sp.latex(c_val)}\\,y(t)"
+                          f" = {sp.latex(f_t)}")
+                ci_ltx = f"y(0) = {sp.latex(y0_val)}"
+            else:
+                eq_ltx = (f"{sp.latex(a_val)}\\,y''(t) + {sp.latex(b_val)}\\,y'(t)"
+                          f" + {sp.latex(c_val)}\\,y(t) = {sp.latex(f_t)}")
+                ci_ltx = (f"y(0) = {sp.latex(y0_val)}, \\quad "
+                          f"y'(0) = {sp.latex(dy0_val)}")
+
+            # Ecuación transformada al dominio de Laplace
+            laplace_ltx = sp.latex(resultado['eq_laplace'])
+
+            # Solución Y(s)
+            ys_ltx = f"Y(s) = {sp.latex(resultado['Y_s'])}"
+
+            # Fracciones parciales (si aplican)
+            parcial_ltx = None
+            if resultado['Y_parcial'] is not None:
+                parcial_ltx = f"Y(s) = {sp.latex(resultado['Y_parcial'])}"
+
+            # Solución final y(t)
+            yt_ltx = f"y(t) = {sp.latex(resultado['y_t'])}"
+
+            # --- Renderizar todas las fórmulas como imágenes en este hilo ---
+            imagenes = {
+                'ecuacion': renderizar_latex(eq_ltx, fontsize=15),
+                'ci': renderizar_latex(ci_ltx, fontsize=14),
+                'laplace': renderizar_latex(laplace_ltx, fontsize=15),
+                'ys': renderizar_latex(ys_ltx, fontsize=16),
+                'yt': renderizar_latex(yt_ltx, fontsize=18,
+                                       text_color='#60a5fa'),
+            }
+            if parcial_ltx:
+                imagenes['parcial'] = renderizar_latex(parcial_ltx, fontsize=15)
+
+            # Generar la figura de la gráfica
             fig = generar_figura(resultado['y_t'],
-                                titulo=f"y(t) = {pretty(resultado['y_t'])}")
+                                titulo=f"$y(t) = {sp.latex(resultado['y_t'])}$")
 
             # Programar actualización de la GUI desde el hilo principal
-            self.after(0, lambda: self._mostrar_resultado(resultado, fig, orden,
-                                                          a_val, b_val, c_val,
-                                                          f_t, y0_val, dy0_val))
+            self.after(0, lambda: self._mostrar_resultado(imagenes, fig))
 
         except Exception as e:
             self.after(0, lambda: self._mostrar_error(str(e)))
 
-    def _mostrar_resultado(self, res, fig, orden, a, b, c, f_t, y0, dy0):
-        """Actualiza el panel de texto y la gráfica con los resultados."""
-        txt = self.texto_resultado
-        txt.config(state='normal')
-        txt.delete('1.0', tk.END)
+    def _mostrar_resultado(self, imagenes, fig):
+        """
+        Actualiza el panel de pasos con las fórmulas LaTeX renderizadas
+        y la gráfica de la solución.
+        """
+        # Limpiar el panel de pasos y las referencias anteriores
+        self._limpiar_panel_pasos()
 
         # Encabezado
-        txt.insert(tk.END,
-            "  RESOLUCIÓN POR TRANSFORMADA DE LAPLACE\n", 'titulo')
-        txt.insert(tk.END, "=" * 55 + "\n\n", 'separador')
+        self._agregar_texto("RESOLUCIÓN POR TRANSFORMADA DE LAPLACE",
+                           color=COLOR_ACCENT2, fuente=('Segoe UI', 13, 'bold'))
+        self._agregar_separador()
 
-        # Paso 1: mostrar la ecuación original con condiciones iniciales
-        txt.insert(tk.END, "  PASO 1: Ecuación diferencial\n", 'paso')
-        if orden == 1:
-            eq_str = f"  {b}*y'(t) + {c}*y(t) = {f_t}"
-            ci_str = f"  y(0) = {y0}"
-        else:
-            eq_str = f"  {a}*y''(t) + {b}*y'(t) + {c}*y(t) = {f_t}"
-            ci_str = f"  y(0) = {y0},  y'(0) = {dy0}"
-        txt.insert(tk.END, eq_str + "\n", 'ecuacion')
-        txt.insert(tk.END, ci_str + "\n\n", 'ecuacion')
+        # Paso 1: ecuación original y condiciones iniciales
+        self._agregar_texto("PASO 1  Ecuación diferencial",
+                           color=COLOR_SUCCESS)
+        self._imagenes_latex.append(imagenes['ecuacion'])
+        tk.Label(self.frame_interior, image=imagenes['ecuacion'],
+                 bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=3)
+        self._imagenes_latex.append(imagenes['ci'])
+        tk.Label(self.frame_interior, image=imagenes['ci'],
+                 bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=3)
+        self._agregar_separador()
 
-        # Paso 2: ecuación transformada al dominio de Laplace
-        txt.insert(tk.END, "  PASO 2: Transformada de Laplace\n", 'paso')
-        txt.insert(tk.END, f"  {pretty(res['eq_laplace'])}\n\n", 'ecuacion')
+        # Paso 2: transformada de Laplace
+        self._agregar_texto("PASO 2  Transformada de Laplace",
+                           color=COLOR_SUCCESS)
+        self._imagenes_latex.append(imagenes['laplace'])
+        tk.Label(self.frame_interior, image=imagenes['laplace'],
+                 bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=3)
+        self._agregar_separador()
 
-        # Paso 3: solución algebraica Y(s)
-        txt.insert(tk.END, "  PASO 3: Solución en dominio de Laplace\n", 'paso')
-        txt.insert(tk.END, f"  Y(s) = {pretty(res['Y_s'])}\n", 'ecuacion')
+        # Paso 3: solución Y(s) en el dominio de Laplace
+        self._agregar_texto("PASO 3  Solución en dominio de Laplace",
+                           color=COLOR_SUCCESS)
+        self._imagenes_latex.append(imagenes['ys'])
+        tk.Label(self.frame_interior, image=imagenes['ys'],
+                 bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=3)
 
-        # Mostrar fracciones parciales si difieren de Y(s)
-        if res['Y_parcial'] is not None:
-            txt.insert(tk.END, "\n  Fracciones parciales:\n", 'paso')
-            txt.insert(tk.END, f"  Y(s) = {pretty(res['Y_parcial'])}\n", 'ecuacion')
+        # Fracciones parciales si difieren de Y(s)
+        if 'parcial' in imagenes:
+            self._agregar_texto("Fracciones parciales:",
+                               color=COLOR_TEXT_DIM, fuente=('Segoe UI', 10))
+            self._imagenes_latex.append(imagenes['parcial'])
+            tk.Label(self.frame_interior, image=imagenes['parcial'],
+                     bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=3)
+        self._agregar_separador()
 
-        txt.insert(tk.END, "\n", '')
+        # Paso 4: solución final y(t) con color destacado
+        self._agregar_texto("PASO 4  Solución final  (transformada inversa)",
+                           color=COLOR_SUCCESS)
+        self._imagenes_latex.append(imagenes['yt'])
+        tk.Label(self.frame_interior, image=imagenes['yt'],
+                 bg=COLOR_PANEL, bd=0).pack(anchor='w', padx=25, pady=8)
+        self._agregar_separador()
 
-        # Paso 4: solución final en el dominio del tiempo
-        txt.insert(tk.END, "  PASO 4: Transformada inversa\n", 'paso')
-        txt.insert(tk.END, f"  y(t) = {pretty(res['y_t'])}\n\n", 'ecuacion')
-
-        txt.insert(tk.END, "=" * 55 + "\n", 'separador')
-        txt.config(state='disabled')
+        # Scroll al inicio del panel de pasos
+        self.canvas_pasos.yview_moveto(0)
 
         # --- Embeber la gráfica usando FigureCanvasTkAgg ---
         if self.canvas_widget:
@@ -669,17 +828,15 @@ class AplicacionLaplace(tk.Tk):
         canvas.get_tk_widget().pack(fill='both', expand=True)
         self.canvas_widget = canvas.get_tk_widget()
 
-        # Guardar referencia a la figura para poder exportarla después
+        # Guardar referencia a la figura para poder exportarla
         self._figura_actual = fig
-
-        # Habilitar botón de guardar gráfica
         self.btn_guardar.config(state='normal')
 
         # Rehabilitar botón resolver
         self.btn_resolver.config(state='normal', text="RESOLVER")
 
     def _guardar_grafica(self):
-        """Abre un diálogo para guardar la gráfica actual como imagen PNG."""
+        """Abre un diálogo para guardar la gráfica actual como imagen."""
         if self._figura_actual is None:
             return
 

@@ -10,12 +10,13 @@ Proyecto desarrollado para la materia de Cálculo — **UTEZ, Academia de Cienci
 - sympy
 - numpy
 - matplotlib
+- Pillow (para renderizado de fórmulas LaTeX en la interfaz)
 - tkinter (incluido con Python en la mayoría de sistemas)
 
 ## Instalación
 
 ```bash
-pip install sympy numpy matplotlib
+pip install sympy numpy matplotlib Pillow
 ```
 
 En sistemas Linux, si falta tkinter:
@@ -33,7 +34,7 @@ python3 laplace_solver.py
 Se abrirá una ventana con:
 
 - **Panel izquierdo:** selector de orden (1° o 2°), campos para ingresar coeficientes (a, b, c), término forzante f(t) y condiciones iniciales.
-- **Panel derecho:** procedimiento paso a paso (ecuación original, transformada de Laplace, solución Y(s), fracciones parciales y solución final y(t)) junto con la gráfica de la solución.
+- **Panel derecho:** procedimiento paso a paso con fórmulas renderizadas en notación matemática LaTeX (fracciones, exponentes, funciones trigonométricas) junto con la gráfica de la solución.
 - **Botones de casos de prueba:** cargan automáticamente los 4 casos requeridos.
 - **Botón "Guardar gráfica":** exporta la gráfica como PNG, PDF o SVG.
 
